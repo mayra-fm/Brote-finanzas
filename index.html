@@ -171,12 +171,12 @@ textarea{resize:vertical;min-height:60px;}
    Guía completa: Instalar-Firebase.md. Si dejas FIREBASE_CONFIG vacío, Brote funciona
    exactamente igual que hoy (solo en este dispositivo, sin login). */
 const FIREBASE_CONFIG = {
-  apiKey: "",
-  authDomain: "",
-  projectId: "",
-  storageBucket: "",
-  messagingSenderId: "",
-  appId: ""
+  apiKey: "AIzaSyAREMG-7yfSAm0W1KK4p2q_NDloh845jXk",
+  authDomain: "brote-finanzas.firebaseapp.com",
+  projectId: "brote-finanzas",
+  storageBucket: "brote-finanzas.firebasestorage.app",
+  messagingSenderId: "936330022361",
+  appId: "1:936330022361:web:c596a00ac077cc9b9a1dc8"
 };
 const CORREO_PERMITIDO = "mayritaa@gmail.com"; // tu correo de Google para entrar a Brote
 
@@ -747,7 +747,7 @@ function popStack(){
   UI.stack.pop(); render(); window.scrollTo(0,0);
 }
 function openSheet(view, params){ UI.sheet = { view, params: params||{} }; render(); }
-function closeSheet(){ UI.sheet = null; render(); }
+function closeSheet(){ UI.sheet = null; UI.pending = null; UI.pendingQueue = null; render(); }
 
 function viewTitle(v){
   const t = { resumen:'Resumen', movimientos:'Movimientos', analisis:'Análisis', tarjeta:'Tarjeta', ahorros:'Ahorros',
@@ -1749,7 +1749,7 @@ function switchAddTab(id){ UI.addTab=id; UI.pending=null; render(); }
 
 function fotoTabHTML(){
   let html = '<div class="foto-drop" onclick="document.getElementById(\'fotoInput\').click()">'+svg('camera')+
-    '<div class="t">Toca para elegir una foto</div><div class="s">Boleta, captura del banco o voucher</div></div>';
+    '<div class="t">Toca para elegir una foto</div><div class="s">Boleta, voucher, captura de tu lista de movimientos o de varias notificaciones juntas — detecta cada uno por separado</div></div>';
   html += '<input type="file" id="fotoInput" accept="image/*" style="display:none" onchange="procesarFoto(this)">';
   html += '<div id="fotoStatus" style="margin-top:10px;font-size:12px;color:var(--ink-soft)"></div>';
   return html;
@@ -1850,11 +1850,22 @@ function procesarTexto(){
 /* ============ FOTO Y VOZ — vía API de Anthropic (necesitan internet) ============ */
 function getApiKey(){ try{ return localStorage.getItem('brote-api-key') || ''; }catch(e){ return ''; } }
 async function callClaudeExtract(contentBlocks){
+  const year = new Date(TODAY).getFullYear();
+  const instrucciones = [
+    'Vas a recibir una imagen financiera. Puede ser de varios tipos y a veces varias juntas en una sola foto:',
+    '(a) una LISTA de movimientos de una app de banco o tarjeta (una fila = un movimiento distinto — sepáralos todos, no te saltes ninguno, aunque haya muchos; ignora resúmenes como "Próx. pago" o "Crédito utilizado", esos no son movimientos);',
+    '(b) un comprobante de Yape/Plin/transferencia (un solo movimiento);',
+    '(c) una boleta o factura con varios productos (es UN SOLO movimiento — usa el monto TOTAL final, nunca sumes ni listes cada producto por separado);',
+    '(d) un estado de cuenta impreso con muchas filas (puede haber decenas de movimientos — sepáralos todos).',
+    'De cada movimiento extrae: fecha (YYYY-MM-DD; si dice "Hoy" usa '+TODAY+', si solo dice día y mes usa el año '+year+'), monto (número positivo), moneda, comercio (el nombre del negocio o persona, nunca el banco que envía la notificación), y número de operación si aparece.',
+    'Esta app solo maneja soles (S/, PEN) y dólares ($, USD). Si un movimiento está en cualquier otra moneda (pesos chilenos, euros, etc.), NO LO INCLUYAS en la respuesta.',
+    'Responde SOLO con un arreglo JSON, uno por movimiento encontrado: [{"date":"YYYY-MM-DD","amount":0,"currency":"PEN","merchant":"","opNumber":null}]. Nada de texto antes o después, ni aunque solo encuentres uno o ninguno (arreglo vacío [] si no hay nada válido).'
+  ].join(' ');
   const body = {
-    model: 'claude-sonnet-4-6', max_tokens: 1000,
+    model: 'claude-sonnet-4-6', max_tokens: 4000,
     messages: [{ role:'user', content: [
       ...contentBlocks,
-      { type:'text', text: 'Extrae de esta boleta/comprobante/mensaje: fecha (YYYY-MM-DD, año '+new Date(TODAY).getFullYear()+' si no aparece), monto (número positivo), moneda (PEN o USD), comercio, y número de operación si aparece. Responde SOLO con JSON: {"date":"YYYY-MM-DD","amount":0,"currency":"PEN","merchant":"","opNumber":null}. Nada de texto antes o después.' }
+      { type:'text', text: instrucciones }
     ]}]
   };
   const headers = {'Content-Type':'application/json'};
@@ -1871,7 +1882,8 @@ async function callClaudeExtract(contentBlocks){
   const textBlock = (data.content||[]).find(b=>b.type==='text');
   if(!textBlock) throw new Error('sin respuesta');
   const clean = textBlock.text.replace(/```json|```/g,'').trim();
-  return JSON.parse(clean);
+  const result = JSON.parse(clean);
+  return Array.isArray(result) ? result : [result]; // compatibilidad si el modelo devuelve un solo objeto
 }
 function procesarFoto(input){
   const file = input.files[0]; if(!file) return;
@@ -1882,9 +1894,14 @@ function procesarFoto(input){
     const base64 = e.target.result.split(',')[1];
     const mediaType = file.type || 'image/jpeg';
     try{
-      const parsed = await callClaudeExtract([{ type:'image', source:{ type:'base64', media_type: mediaType, data: base64 } }]);
-      UI.pending = { date: parsed.date||TODAY, merchant: parsed.merchant||'', amount: parsed.amount||null,
-        currency: parsed.currency==='USD'?'USD':'PEN', opNumber: parsed.opNumber||null, type:'egreso' };
+      const items = await callClaudeExtract([{ type:'image', source:{ type:'base64', media_type: mediaType, data: base64 } }]);
+      if(!items.length){
+        status.textContent = 'No encontré movimientos en soles o dólares en esta imagen.';
+        return;
+      }
+      UI.pendingQueue = items.map(parsed => ({ date: parsed.date||TODAY, merchant: parsed.merchant||'', amount: parsed.amount||null,
+        currency: parsed.currency==='USD'?'USD':'PEN', opNumber: parsed.opNumber||null, type:'egreso' }));
+      UI.pending = UI.pendingQueue.shift();
       render();
     }catch(err){
       if(err.message==='sin-clave') status.innerHTML = 'Fuera de Claude, esto necesita tu clave de API. Agrégala en <b>Ajustes → Foto y voz</b>.';
@@ -1917,7 +1934,12 @@ function toggleVoz(){
 /* ---- Revisión antes de guardar (siempre se muestra lo que se entendió) ---- */
 function reviewFormHTML(){
   const p = UI.pending;
-  let html = '<div class="eyebrow" style="margin:10px 0">Esto entendí — corrige lo que haga falta</div>';
+  const queueLen = (UI.pendingQueue||[]).length;
+  let html = '';
+  if(queueLen>0){
+    html += '<div class="chip var" style="margin:8px 0">'+(queueLen===1?'Queda 1 movimiento más por revisar':'Quedan '+queueLen+' movimientos más por revisar')+'</div>';
+  }
+  html += '<div class="eyebrow" style="margin:10px 0">Esto entendí — corrige lo que haga falta</div>';
   html += '<div class="seg" id="revTipo"><button class="'+(p.type!=='ingreso'?'active':'')+'" data-v="egreso" onclick="segPick(this)">Gasto</button>'+
     '<button class="'+(p.type==='ingreso'?'active':'')+'" data-v="ingreso" onclick="segPick(this)">Ingreso</button></div>';
   html += '<label class="field"><span class="lt">Fecha</span><input type="date" id="revFecha" value="'+(p.date||TODAY)+'"></label>';
@@ -1928,10 +1950,20 @@ function reviewFormHTML(){
     catPickerHTML('rev', matchMerchantKey(p.merchant)&&STATE.merchantMap[matchMerchantKey(p.merchant)]||'otros');
   html += '<label class="field"><span class="lt">Detalle (opcional)</span><input type="text" id="revDetalle"></label>';
   if(p.opNumber) html += '<div class="txn-meta" style="margin-top:8px">N.º de operación: '+esc(p.opNumber)+'</div>';
-  html += '<div class="grid2" style="margin-top:16px"><button class="btn ghost" onclick="UI.pending=null;render()">Cancelar</button>'+
-    '<button class="btn primary" onclick="guardarPending()">Guardar</button></div>';
+  html += '<div class="grid2" style="margin-top:16px"><button class="btn ghost" onclick="saltarPending()">'+(queueLen>0?'Saltar este':'Cancelar')+'</button>'+
+    '<button class="btn primary" onclick="guardarPending()">'+(queueLen>0?'Guardar y seguir':'Guardar')+'</button></div>';
   return html;
 }
+function avanzarCola(){
+  if(UI.pendingQueue && UI.pendingQueue.length){
+    UI.pending = UI.pendingQueue.shift();
+    render();
+  } else {
+    UI.pending = null; UI.pendingQueue = null;
+    closeSheet(); render();
+  }
+}
+function saltarPending(){ avanzarCola(); }
 function guardarPending(){
   const tipo = document.querySelector('#revTipo .active').dataset.v;
   const fecha = document.getElementById('revFecha').value;
@@ -1948,7 +1980,8 @@ function guardarPending(){
   teachMerchant(merchant, cat);
   STATE.txns.push(t);
   runMigrations(); saveState();
-  UI.pending = null; closeSheet(); showToast('Guardado'); render();
+  showToast('Guardado');
+  avanzarCola();
 }
 
 /* ============ INICIO ============ */
