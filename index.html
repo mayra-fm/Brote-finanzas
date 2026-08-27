@@ -323,7 +323,8 @@ function matchMerchantKey(merchant){
   const m = normMerchant(merchant);
   let best = null;
   for(const key of Object.keys(STATE.merchantMap)){
-    if(m.includes(key)){ if(!best || key.length>best.length) best = key; }
+    const nk = normMerchant(key); // normaliza también la llave guardada — evita que un '*' rompa la coincidencia
+    if(nk && m.includes(nk)){ if(!best || nk.length>best.length) best = key; }
   }
   return best;
 }
@@ -1514,10 +1515,20 @@ function sheetMovDetail(id){
   if(!t.fixed && !t.installmentOf){
     html += '<button class="btn ghost" style="margin-top:8px" onclick="abrirACuotas(\''+t.id+'\')">Lo estoy pagando en cuotas</button>';
   }
+  html += '<h2 class="section-title" style="margin-top:16px">Nombre para diferenciarlo</h2>';
+  html += '<label class="field"><span class="lt">Comercio (como sale en la boleta): '+esc(t.merchant)+'</span>'+
+    '<input type="text" id="detAlias" value="'+esc(t.alias||'')+'" placeholder="Déjalo vacío si el comercio ya es claro"></label>';
+  html += '<button class="btn ghost" style="margin-top:8px" onclick="guardarAlias(\''+t.id+'\')">Guardar nombre</button>';
   html += '<h2 class="section-title" style="margin-top:16px">Categoría</h2>';
   html += catPickerHTML('det', t.category);
   html += '<button class="btn ghost" style="margin-top:10px" onclick="cambiarCategoria(\''+t.id+'\',catPickerValue(\'det\'))">Guardar categoría</button>';
   return html;
+}
+function guardarAlias(id){
+  const t = STATE.txns.find(x=>x.id===id); if(!t) return;
+  const alias = document.getElementById('detAlias').value.trim();
+  if(alias) t.alias = alias; else delete t.alias;
+  saveState(); showToast('Guardado'); render();
 }
 function fieldRow(label, val){
   return '<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px">'+
@@ -1771,7 +1782,8 @@ function manualTabHTML(){
   html += '<div class="seg" id="manTipo"><button class="active" data-v="egreso" onclick="segPick(this)">Gasto</button>'+
     '<button data-v="ingreso" onclick="segPick(this)">Ingreso</button></div>';
   html += '<label class="field"><span class="lt">Fecha</span><input type="date" id="manFecha" value="'+TODAY+'"></label>';
-  html += '<label class="field"><span class="lt">Comercio / descripción</span><input type="text" id="manMerchant" placeholder="Rappi"></label>';
+  html += '<label class="field"><span class="lt">Comercio (como sale en la boleta)</span><input type="text" id="manMerchant" placeholder="Rappi"></label>';
+  html += '<label class="field"><span class="lt">Nombre para diferenciarlo (opcional)</span><input type="text" id="manAlias" placeholder="Déjalo vacío si el comercio ya es claro"></label>';
   html += '<div class="grid2"><label class="field"><span class="lt">Monto</span><input type="number" step="0.01" id="manMonto"></label>';
   html += '<label class="field"><span class="lt">Moneda</span><select id="manMoneda"><option value="PEN">Soles (S/)</option><option value="USD">Dólares ($)</option></select></label></div>';
   html += catPickerHTML('man', 'otros');
@@ -1787,6 +1799,7 @@ function guardarManual(){
   const tipo = document.querySelector('#manTipo .active').dataset.v;
   const fecha = document.getElementById('manFecha').value;
   const merchant = document.getElementById('manMerchant').value.trim();
+  const alias = document.getElementById('manAlias').value.trim();
   const monto = parseFloat(document.getElementById('manMonto').value);
   const moneda = document.getElementById('manMoneda').value;
   const cat = catPickerValue('man');
@@ -1794,6 +1807,7 @@ function guardarManual(){
   if(!merchant || !monto || monto<=0){ showToast('Completa comercio y monto'); return; }
   const t = { id: uid('man'), date: fecha, merchant, amount: round2(monto), currency: moneda,
     category: cat, type: tipo, source:'manual' };
+  if(alias) t.alias = alias;
   if(detalle) t.detalle = detalle;
   STATE.txns.push(t);
   runMigrations(); saveState(); closeSheet(); showToast('Guardado'); render();
@@ -1943,7 +1957,8 @@ function reviewFormHTML(){
   html += '<div class="seg" id="revTipo"><button class="'+(p.type!=='ingreso'?'active':'')+'" data-v="egreso" onclick="segPick(this)">Gasto</button>'+
     '<button class="'+(p.type==='ingreso'?'active':'')+'" data-v="ingreso" onclick="segPick(this)">Ingreso</button></div>';
   html += '<label class="field"><span class="lt">Fecha</span><input type="date" id="revFecha" value="'+(p.date||TODAY)+'"></label>';
-  html += '<label class="field"><span class="lt">Comercio</span><input type="text" id="revMerchant" value="'+esc(p.merchant||'')+'"></label>';
+  html += '<label class="field"><span class="lt">Comercio (como sale en la boleta)</span><input type="text" id="revMerchant" value="'+esc(p.merchant||'')+'"></label>';
+  html += '<label class="field"><span class="lt">Nombre para diferenciarlo (opcional)</span><input type="text" id="revAlias" value="'+esc(p.alias||'')+'" placeholder="Déjalo vacío si el comercio ya es claro"></label>';
   html += '<div class="grid2"><label class="field"><span class="lt">Monto</span><input type="number" step="0.01" id="revMonto" value="'+(p.amount||'')+'"></label>';
   html += '<label class="field"><span class="lt">Moneda</span><select id="revMoneda"><option value="PEN" '+(p.currency==='PEN'?'selected':'')+'>Soles (S/)</option><option value="USD" '+(p.currency==='USD'?'selected':'')+'>Dólares ($)</option></select></label></div>';
   html += '<div class="eyebrow" style="margin-top:12px">Categoría — tú la conoces mejor</div>'+
@@ -1968,6 +1983,7 @@ function guardarPending(){
   const tipo = document.querySelector('#revTipo .active').dataset.v;
   const fecha = document.getElementById('revFecha').value;
   const merchant = document.getElementById('revMerchant').value.trim();
+  const alias = document.getElementById('revAlias').value.trim();
   const monto = parseFloat(document.getElementById('revMonto').value);
   const moneda = document.getElementById('revMoneda').value;
   const cat = catPickerValue('rev');
@@ -1975,6 +1991,7 @@ function guardarPending(){
   if(!merchant || !monto || monto<=0){ showToast('Completa comercio y monto'); return; }
   const t = { id: uid('cap'), date: fecha, merchant, amount: round2(monto), currency: moneda,
     category: cat, type: tipo, source:'captura' };
+  if(alias) t.alias = alias;
   if(detalle) t.detalle = detalle;
   if(UI.pending.opNumber) t.opNumber = UI.pending.opNumber;
   teachMerchant(merchant, cat);
